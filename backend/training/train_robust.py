@@ -52,7 +52,7 @@ import numpy as np
 import torch
 from torch import nn
 from torch.utils.data import Dataset, DataLoader
-from scipy.signal import fftconvolve
+from scipy.signal import butter, fftconvolve, sosfilt
 
 sys.path.insert(0, os.getcwd())
 from ml import detector_v2, detector_v4
@@ -97,11 +97,28 @@ def _c_phone_room(x, rng, rirs):
     return _c_telephony(_c_noise(_c_reverb(x, rng, rirs), rng, rirs), rng, rirs)
 
 
+def _c_speaker_replay(x, rng, rirs):
+    # clone played from a phone/laptop speaker into a mic -- the classic live
+    # injection channel, and the one where artifact detectors degrade hardest
+    # (the same physics ml/replay.py keys on: small drivers can't reproduce the
+    # low band, driver+air roll off the top octave). Randomized band edges so
+    # the model learns the channel FAMILY, not one fixed filter; then the room
+    # the sound crossed and the capturing mic's noise floor.
+    lo = float(rng.uniform(180, 400))
+    hi = float(rng.uniform(3400, 6500))
+    sos = butter(4, [lo, hi], btype="bandpass", fs=SAMPLE_RATE, output="sos")
+    y = sosfilt(sos, x).astype(np.float32)
+    y = _c_reverb(y, rng, rirs)
+    return add_noise(y, float(rng.uniform(15, 30)), seed=int(rng.integers(1 << 30)))
+
+
 _CONDS = {"clean": _c_clean, "telephony": _c_telephony, "reverb": _c_reverb,
-          "noise": _c_noise, "phone_room": _c_phone_room}
+          "noise": _c_noise, "phone_room": _c_phone_room,
+          "speaker_replay": _c_speaker_replay}
 # training samples conditions with these weights (telephony dominates)
-_TRAIN_W = {"telephony": 0.34, "phone_room": 0.24, "reverb": 0.14, "noise": 0.12, "clean": 0.16}
-_VAL_CONDS = ["clean", "telephony", "reverb", "noise", "phone_room"]
+_TRAIN_W = {"telephony": 0.30, "phone_room": 0.20, "speaker_replay": 0.14,
+            "reverb": 0.12, "noise": 0.10, "clean": 0.14}
+_VAL_CONDS = ["clean", "telephony", "reverb", "noise", "phone_room", "speaker_replay"]
 
 
 def _prep(audio):
@@ -282,7 +299,7 @@ def evaluate(model, data, device, workers, prep=_prep):
     for c in _VAL_CONDS:
         res[c] = _auc(*_scores(model, data["val"], c, device, data["rir"], workers, prep))
     if data["user"]:
-        for c in ("telephony", "phone_room"):
+        for c in ("telephony", "phone_room", "speaker_replay"):
             res[f"USER_{c}"] = _auc(*_scores(model, data["user"], c, device, data["rir"], workers, prep))
     return res
 

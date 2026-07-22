@@ -9,6 +9,7 @@ from ml import spectrogram_cnn
 from ml import wav2vec2_detector
 from ml import vad
 from ml import quality
+from ml import replay
 from ml.handcrafted import score_handcrafted
 from ml.breath_detector import score_breath
 from ml.phase_coherence import score_phase
@@ -203,6 +204,11 @@ def detect_samples(audio: np.ndarray) -> dict:
     result["quality"] = q
     if not q["ok"]:
         result["alert_level"] = "UNCERTAIN"
+    # Replay-channel evidence (no ensemble weight): flags the loudspeaker->air->mic
+    # signature — the classic clone-injection path AND the channel where artifact
+    # detectors degrade hardest. Either the model catches the synthesis or this
+    # catches the replay. Fullband channels only (see ml/replay.py telephony note).
+    result["replay"] = replay.assess(np.concatenate(voiced))
     return result
 
 

@@ -22,6 +22,7 @@ def fuse(
     txn: dict | None = None,
     quality_ok: bool = True,
     quality_reason: str = "",
+    replay_suspect: bool = False,
 ) -> dict:
     """
     Parameters
@@ -32,6 +33,12 @@ def fuse(
     txn           : optional {amount: float, new_beneficiary: bool}.
     quality_ok    : False when input quality was too low to trust the voice score.
     quality_reason: human-readable quality failure (shown to the agent).
+    replay_suspect: True when ml.replay flags a loudspeaker-replay channel
+                    signature (see ml/replay.py). The neural detector was not
+                    trained on this channel and can read falsely clean on it --
+                    a clean voice score over a suspected replay is exactly the
+                    "clone played from a phone speaker" bypass, so it must not
+                    clear to MONITOR on the voice score alone.
 
     Returns {action, action_reason}.
     """
@@ -57,7 +64,7 @@ def fuse(
     if voice_red:
         reasons.append(f"synthetic-voice risk {deepfake_risk}")
     if scam_red:
-        reasons.append(f"scam-script risk {scam_score}")
+        reasons.append(f"APP-fraud/coercion risk {scam_score}")
 
     threat = voice_red or scam_red
 
@@ -74,5 +81,17 @@ def fuse(
 
     if novel:
         reason += " (elevated novelty noted)"
+
+    # Replay-channel gate (last word, like the quality gate above): a suspected
+    # loudspeaker replay can't be waved through as MONITOR just because the
+    # voice score read clean -- that score isn't trustworthy on this channel.
+    # Doesn't escalate an already-BLOCK/CHALLENGE decision's severity, just
+    # documents the extra evidence and prevents a silent false-clear.
+    if replay_suspect:
+        if action == "MONITOR":
+            action = "CHALLENGE"
+            reason = "loudspeaker replay suspected — voice channel can't be trusted, verify another way"
+        else:
+            reason += " (loudspeaker replay suspected)"
 
     return {"action": action, "action_reason": reason, "novelty": novelty}

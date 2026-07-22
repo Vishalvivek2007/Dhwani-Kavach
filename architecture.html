@@ -87,8 +87,8 @@
       <div class="cols">
         <div class="col cy">
           <div class="h" style="color:var(--cyan)">Voice deepfake ensemble</div>
-          <div class="s">wav2vec2 SSL (0.80) + spectral · breath · phase · liveness → risk 0–100</div>
-          <span class="chip">worst-window</span><span class="chip">silence-gated</span>
+          <div class="s">2 independent XLS-R detectors (0.90) + 4 heuristics (0.10, evidence) → risk 0–100</div>
+          <span class="chip">worst-window</span><span class="chip">Silero VAD</span>
         </div>
         <div class="col wa">
           <div class="h" style="color:var(--warn)">Scam-script</div>

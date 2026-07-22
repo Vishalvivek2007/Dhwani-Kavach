@@ -182,37 +182,34 @@ card(s, 6.8, 4.35, 5.6, 2.2, "Explainable output",
 footer(s, "Architecture")
 
 # 8 DEEP-DIVE: DETECTION LAYERS
-s = new_slide(); kicker(s, "Deep dive · voice engine"); title(s, "Five layers vote; the neural model leads")
+s = new_slide(); kicker(s, "Deep dive · voice engine"); title(s, "Two independent neural detectors lead; heuristics are evidence")
 simple_table(s, [
     ("Layer", "Weight", "What it measures"),
-    ("Neural (wav2vec2 SSL)", "0.80", "learned deepfake signature — the primary verdict"),
-    ("Spectral / MFCC", "0.07", "handcrafted spectral biometrics"),
-    ("Breath pattern", "0.03", "natural breath energy a synth often lacks"),
-    ("Phase coherence", "0.05", "phase artifacts of vocoded audio"),
-    ("Liveness", "0.05", "articulation / liveness cues"),
-], 0.9, 2.0, 11.5, 3.0, [3.6, 1.4, 6.5])
+    ("Neural — W2VAASIST (XLS-R)", "0.45", "codec / artifact-specialist deepfake detector"),
+    ("Neural — clone_v3 (XLS-R)", "0.45", "fine-tuned on modern commercial clones (ElevenLabs)"),
+    ("MFCC / breath / phase / liveness", "0.10", "acoustic heuristics — evidence only"),
+], 0.9, 2.0, 11.5, 2.4, [4.4, 1.3, 5.8])
 bullets(s, [
-    "Weighted ensemble → 0–100 risk. Bands: GREEN <40 · AMBER 40–69 · RED ≥70.",
-    "Worst 4-second window drives the verdict — a deepfake anywhere in the call is a deepfake.",
-    "Near-silence is gated out; long calls are strided so latency stays bounded.",
-], 0.9, 5.2, 11.5, 1.6, size=14)
+    "Two INDEPENDENT architectures (different training / failure modes) → fusion is robust where one model overfits. Optional learned logistic-regression fusion.",
+    "Weighted → 0–100 risk, Platt-calibrated. Bands GREEN <40 · AMBER 40–69 · RED ≥70. Worst 4s window wins.",
+    "Silero VAD gates non-speech (hold music, line noise), not just silence.",
+], 0.9, 4.7, 11.5, 2.0, size=13)
 footer(s, "Detection Layers")
 
-# 9 DEEP-DIVE: MODEL + TRAINING JOURNEY
-s = new_slide(); kicker(s, "Deep dive · model & training"); title(s, "wav2vec2 SSL — trained through real failures")
+# 9 DEEP-DIVE: THE GENERALIZATION LESSON
+s = new_slide(); kicker(s, "Deep dive · model & the generalization lesson"); title(s, "Why one detector wasn't enough")
 bullets(s, [
-    "Architecture: wav2vec2-base (self-supervised speech encoder) → mean-pool (768-d) → MLP head → softmax.",
-    "SSL pretraining on large unlabelled speech → generalises far better than a from-scratch CNN.",
-], 0.9, 1.95, 11.5, 1.1, size=14)
+    "v1 was a single wav2vec2: ~4% EER on ASVspoof / Kaggle dev sets — looked great.",
+    "Measured on REAL ElevenLabs clones + real voices it was near-random: AUC 0.63. A textbook out-of-domain failure (Müller et al., Interspeech 2022: SSL detectors degrade 200–1000% cross-domain).",
+    "Fix: TWO independent XLS-R detectors + fusion — a codec/artifact specialist and a clone specialist.",
+], 0.9, 1.95, 11.5, 2.6, size=14)
 simple_table(s, [
-    ("Stage", "Data added", "Result", "Fixed"),
-    ("CNN baseline", "ASVspoof 2019 LA", "2.75% dev", "9.75% on unseen attacks"),
-    ("SSL v1", "+ noise/gain aug", "0.40% dev", "false-flagged real voices"),
-    ("SSL v2", "+ real Hindi voices", "0.13% dev", "broadened 'real'"),
-    ("SSL v3", "+ in-the-wild + your clones", "~5.2% modern", "realistic hard eval"),
-    ("SSL v4 (deployed)", "+ telephony augmentation", "4% clean / 6% phone", "works on phone lines"),
-], 0.9, 3.1, 11.5, 3.0, [2.6, 3.6, 2.9, 2.4], us_col=2)
-footer(s, "Model & Training")
+    ("On our labeled real-vs-clone set", "EER", "AUC"),
+    ("v1 — single wav2vec2 (measured)", "40%", "0.63"),
+    ("current — dual XLS-R + fusion", "~6.7%", "0.996"),
+], 0.9, 4.9, 9.5, 1.6, [5.5, 2.0, 2.0], us_col=2)
+para(textbox(s, 0.9, 6.6, 11.5, 0.4), "The lesson that drives the design: never trust one detector's leaderboard number.", 12, MUTED, first=True)
+footer(s, "Model & Generalization")
 
 # 10 DEEP-DIVE: SCAM-SCRIPT + MULTILINGUAL
 s = new_slide(); kicker(s, "Deep dive · scam-script layer"); title(s, "Catching the human scammer")
@@ -253,15 +250,15 @@ card(s, 6.75, 2.0, 5.7, 3.5, "Campaign detection",
 footer(s, "Novelty & Campaigns")
 
 # 13 TELEPHONY
-s = new_slide(); kicker(s, "Deep dive · telephony robustness"); title(s, "It works on real phone lines")
+s = new_slide(); kicker(s, "Deep dive · telephony (in progress)"); title(s, "Real phone lines — the hard part, honestly")
 bullets(s, [
-    "Real calls are 8 kHz, band-limited (300–3400 Hz), G.711 µ-law companded, and lossy.",
-    "We degrade training audio to phone quality (codec + packet loss) so the model learns telephony — not just clean mics.",
-    "Result: clean 4% EER vs phone 6% EER — a ~2-point gap where un-augmented models show a large cliff.",
-    "Proven live: a clone through an 8 kHz phone filter still reads RED.",
-], 0.9, 2.0, 11.5, 3, size=15)
-stat_card(s, 0.9, 5.2, 5.6, 1.4, "4% → 6%", "clean → phone-line EER (small gap = robust)", CYAN)
-stat_card(s, 6.8, 5.2, 5.6, 1.4, "8 kHz / G.711", "the format your call centre actually runs", WARN)
+    "Real calls are 8 kHz, band-limited (300–3400 Hz), G.711 µ-law, and lossy.",
+    "We built a channel-robust training pipeline (train_robust.py) that degrades audio on the fly, and an A/B eval harness (eval/run.py) that measures the phone-line cost.",
+    "Measured today: telephony is still a weakness — AUC ~0.62–0.82 vs 0.996 clean.",
+    "We show this honestly — the pipeline to close the gap is built; more diverse channel data is the next run.",
+], 0.9, 2.0, 11.5, 3.4, size=14)
+stat_card(s, 0.9, 5.5, 5.6, 1.2, "0.996 → ~0.7", "clean → phone AUC (the gap we're closing)", WARN)
+stat_card(s, 6.8, 5.5, 5.6, 1.2, "pipeline built", "channel-robust retraining + A/B eval", CYAN)
 footer(s, "Telephony")
 
 # 14 UNIQUENESS
@@ -282,9 +279,9 @@ footer(s, "Uniqueness")
 s = new_slide(); kicker(s, "Comparison with benchmarks"); title(s, "Accuracy is table-stakes; the gap is everything else", 26)
 simple_table(s, [
     ("Capability", "Academic (AASIST/RawNet2)", "Commercial cloud", "Dhwani-Kavach"),
-    ("ASVspoof dev EER", "~1%", "n/a", "0.13%"),
-    ("Modern / in-the-wild fakes", "degrades (20–40%)", "good", "~4–6% EER"),
-    ("Telephony (8 kHz)", "usually untested", "varies", "6% EER (trained for it)"),
+    ("Real-clone set (labeled)", "not reported", "not reported", "AUC 0.996 / EER ~6.7%"),
+    ("Modern clone clips", "degrades (20–40%)", "good", "100% flagged"),
+    ("Telephony (8 kHz)", "usually untested", "varies", "weak (~0.62–0.82) — active"),
     ("Human scam (no deepfake)", "✗", "✗", "✓ LLM layer"),
     ("Deployment", "research code", "cloud API", "on-prem Docker"),
     ("Explainability & governance", "✗", "limited", "✓ built-in"),
@@ -314,7 +311,7 @@ card(s, 0.9, 2.0, 3.8, 2.4, "Fail-safe composition", "Advanced layers degrade to
 card(s, 4.95, 2.0, 3.8, 2.4, "Real-time backpressure", "Only the newest window is scored; off-thread inference. A slow CPU can't stall or flood the stream.")
 card(s, 9.0, 2.0, 3.4, 2.4, "Runtime conflict solved", "Diagnosed & fixed an OpenMP clash (torch + Whisper) that crashed the process — now stable.")
 card(s, 0.9, 4.6, 3.8, 2.0, "No-audio principle", "Audio scored in memory & discarded; only verdicts + transcripts persist. Minimal breach surface.")
-card(s, 4.95, 4.6, 3.8, 2.0, "Verdict stability", "Peak-hold with decay smooths per-window jitter so a flagged call stays flagged.")
+card(s, 4.95, 4.6, 3.8, 2.0, "Verdict stability", "StreamAggregator: EWMA + 2-window confirmation + hysteresis so a flagged call stays flagged.")
 card(s, 9.0, 4.6, 3.4, 2.0, "Bounded latency", "60s call scored in ~6s; chunk caps keep long calls responsive.")
 footer(s, "Engineering")
 
@@ -344,16 +341,15 @@ footer(s, "Trust & Governance")
 # 20 LIMITATIONS
 s = new_slide(); kicker(s, "Honest limitations & future work"); title(s, "What's a v1 today — and the upgrade path")
 bullets(s, [
-    "Thresholds (voiceprint 0.85, fusion cut-offs) are sensible defaults → calibrate on real bank traffic in a pilot.",
-    "Novelty is a softmax-uncertainty heuristic → upgrade to embedding-distance OOD.",
-    "Campaign store is a linear scan → FAISS / pgvector at scale.",
-    "EERs are on differing dev sets → a single fixed, telephony-inclusive benchmark with CIs is next.",
-], 0.9, 2.0, 11.5, 2.6, size=14)
+    "Small eval set (30 clips) → directional; a large fixed benchmark is in progress (harness built: eval/run.py).",
+    "Telephony is a measured weakness (AUC ~0.62–0.82) → channel-robust retraining is the active fix.",
+    "Out-of-domain studio-English real voices false-positive → needs more diverse real training data.",
+    "Default hand-weighted ensemble under-performs its neural core → deploy calibration + fusion (EER 20% → 13% → 3%).",
+], 0.9, 2.0, 11.5, 2.8, size=14)
 bullets(s, [
-    "LLM is currently a cloud call → the same Nemotron runs as an on-prem NIM container (base-URL change only).",
-    "Customer voice-identity (is it this customer?) not yet built — anti-spoofing only; it's the next layer.",
-    "Adversarial-evasion robustness is untested — on the roadmap.",
-], 0.9, 4.7, 11.5, 2, size=14, color=MUTED)
+    "LLM is a cloud call → same Nemotron as an on-prem NIM container (base-URL change).",
+    "Customer voice-identity not built yet; adversarial-evasion untested.",
+], 0.9, 4.9, 11.5, 1.6, size=14, color=MUTED)
 footer(s, "Limitations")
 
 # 21 DEMO BRIDGE
@@ -442,19 +438,19 @@ NOTES = [
     "[1:00] We didn't build a detector, we built a fraud shield. Detector is a commodity and narrow. Our edge = the decision, the deployment, the intelligence around it.",
     "[1:00] Whole system in a line. Read the flow. Three numbers: ~4s, 5+LLM layers, 0 audio stored.",
     "[1:15] Two entry points one engine. Fail-safe: any layer can go neutral, core verdict still ships. Real-time: off-thread, newest-window-only. Explainable output.",
-    "[1:30] Five layers vote; neural model = 80% weight, four handcrafted checks support. Weighted → 0-100, banded. Worst-window drives verdict. Silence gated.",
-    "[2:00] SLOW DOWN. wav2vec2 SSL, why it generalises. The training JOURNEY — each row fixed a real failure: CNN overfit (2.75→9.75 unseen), SSL false-flagged reals, added Hindi, added modern fakes+our clones, added telephony (4/6%). HONEST: EERs on different dev sets, not directly comparable.",
+    "[1:30] TWO independent neural detectors carry the verdict (0.90): W2VAASIST codec-specialist + clone_v3 clone-specialist. Heuristics 0.10 evidence only. Platt-calibrated. Silero VAD gates non-speech. Optional learned fusion.",
+    "[2:00] SLOW DOWN — strongest slide. v1 single wav2vec2 = ~4% on Kaggle dev BUT near-random (AUC 0.63) on real ElevenLabs clones — textbook out-of-domain failure (Müller 2022). Fix: two independent XLS-R detectors + fusion → AUC 0.996 on the same real clips. Lesson: never trust one detector's leaderboard number.",
     "[1:30] The layer competitors lack. Whisper STT → Nemotron LLM → tactics (urgency, authority, isolation, new-payee, OTP, threat). Background, non-blocking. Multilingual nearly free — Hindi scam = 90. Fail-safe neutral offline.",
     "[1:15] Rule-based ON PURPOSE — auditable. Read rule. Context makes it proportionate (balance check vs 5-lakh transfer). Learned policy needs outcome data we accumulate first.",
     "[1:30] Novelty = model uncertainty (1-|2p-1|) → unknown signature lifts to AMBER; honest heuristic, OOD is upgrade. Campaigns: free voiceprint, cosine match, same voice = campaign, prior fraud = blocklist. 'Same voice hit 14 customers' — compounding data moat.",
-    "[1:15] Real calls: 8kHz, G.711, lossy. Others die on phone lines. We augment training → learn telephony. 4% clean vs 6% phone = tiny gap. Prove live with phone-filter clone.",
+    "[1:15] Be HONEST. Real calls 8kHz/G.711/lossy. We built channel-robust training + A/B eval. Telephony still weak: AUC ~0.62-0.82 vs 0.996 clean. Frame as active work, pipeline built — do NOT claim a low phone EER.",
     "[1:00] Sweep six cards. No competitor has all six.",
-    "[1:30] Be rigorous & honest. Academic beats us on ASVspoof (~1% vs our 0.13%) BUT generalises poorly (20-40% in-the-wild). We win the differentiator rows. Accuracy is table-stakes; we optimise for deployment, not leaderboard.",
+    "[1:30] Rigorous & honest. On our labeled real-clone set: AUC 0.996 / EER ~6.7%, 100% clones flagged. Telephony weak (active work). We win the differentiator rows (human-scam, on-prem, governance, campaigns). Accuracy is table-stakes; we optimise for real deployment.",
     "[1:15] Six compounding advantages. Highlight: data network effect (blocklist smarter with use, bank's own data) and governance-as-moat (banks legally need it, vendors lack it).",
     "[1:15] Not a notebook demo. Sweep cards. War story: OpenMP crash (torch+Whisper) diagnosed & fixed — demo vs product.",
     "[1:15] Drops in beside the stack, no rip-and-replace. Flow: telephony → SIPREC → our container → agent/fraud engine. On-prem, standard integration, runs like any service. Secured; no audio retained.",
     "[1:15] Banks don't go full-power day one. Shadow mode (30-day log-only → flip to enforce). Evidence & audit. Governance (TPR/FPR, drift, registry) = RBI MRM built in. Prove risk-free, then enforce.",
-    "[1:15] Say limitations with CONFIDENCE. Thresholds→calibrate; novelty→OOD; linear scan→FAISS; EER sets→one benchmark; cloud LLM→on-prem NIM; customer identity→next; adversarial→tested next. Roadmap, not pretence.",
+    "[1:15] Say limitations with CONFIDENCE. Small eval set (30 clips)→big benchmark in progress. Telephony weak (AUC 0.62-0.82). Studio-English real voices false-positive→more diverse real data. Default ensemble under-performs neural core→deploy calibration+fusion (20→13→3%). Cloud LLM→on-prem NIM. Customer-identity & adversarial = next.",
     "[~8min] DEMO. 1 real→GREEN. 2 clone→RED. 3 scam in real voice→tactics+escalate. 4 phone-clone→still RED. 5 (opt) Hindi. 6 backend /cases /campaigns /governance. Don't demo KittenTTS audio. Offline→scam neutral, voice still works.",
     "[1:15] TRL 5-6, justified: working prototype, realistic data, deployable Docker+governance. Path to 7-8: shadow pilot = operational validation, calibrate, harden SIPREC+mTLS. Honest: validated prototype, not live deployment yet.",
     "[1:00] 'Done' rows built & demoed today. Next: customer identity, stronger novelty, then bank PoC path.",

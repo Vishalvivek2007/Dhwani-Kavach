@@ -1,12 +1,8 @@
-# Dhwani-Kavach — Technical Overview (for academic/technical review)
+# Dhwani-Kavach — Technical Overview (for academic review)
 
 A complete, honest technical description: architecture, algorithms, models,
 training, evaluation, engineering decisions, and limitations. Written for a
 technical panel that needs to understand *how* and *why* each part works.
-
-Every number in this document is reproducible from the code in this repo
-(`backend/tools/fit_calibration.py`, `backend/eval/ab_channels.py`) — none of
-it is a marketing figure.
 
 ---
 
@@ -16,156 +12,169 @@ A FastAPI service exposing two ingestion paths into one shared detection engine:
 
 ```
                           ┌──────────────── Detection engine ────────────────┐
- REST  POST /api/analyze ─┤  audio → [two independent neural detectors        │
- (files, disputes)        │           + 4 acoustic evidence signals]          │
-                          │          [scam-script: STT → LLM]                │
- WS   /ws/analyze ────────┤          [novelty]   [voiceprint/campaign]       │
- (live, 4s/2s windows)    │              │                                   │
-                          │       [decision fusion + txn context]            │
- WebRTC  /ws/rtc/{room} ──┤                                                   │
- (live-call signaling,    └──────────────┬───────────────────────────────────┘
-  media stays P2P)                       ▼
+ REST  POST /api/analyze ─┤  audio → [5-layer voice ensemble]                │
+ (files, disputes)        │          [scam-script: STT → LLM]                │
+                          │          [novelty]   [voiceprint/campaign]       │
+ WS  /ws/analyze ─────────┤              │                                   │
+ (live, 4s/2s windows)    │       [decision fusion + txn context]            │
+                          └──────────────┬───────────────────────────────────┘
+                                         ▼
                        {risk_score, alert_level, action, layer_breakdown,
-                        quality, scam, novelty, campaign, mode, call_id}
+                        scam, novelty, campaign, mode, call_id}
                                          │
                  audit log (JSONL) · metrics (Prometheus) · governance · campaigns
 ```
 
 - **Backend:** FastAPI + Uvicorn, PyTorch, torchaudio/librosa, transformers.
-- **Frontend:** Vite + React (TanStack Router) — file-upload analysis, a live
-  mic/WS dashboard, and a WebRTC two-role live-call demo.
+- **Frontend:** Vite + React (live dashboard + file-upload UI).
 - **Design principle:** every advanced layer is **additive and fail-safe** — if a
-  dependency (STT, LLM, an optional model file, even network access) is missing,
-  that layer returns neutral/degrades gracefully and the core verdict still ships.
-  The backend boots and scores with **zero network access** — the SSL backbone's
-  architecture is vendored locally as a config file; only its weights (already on
-  disk) are needed.
+  dependency (STT, LLM, model file) is missing, that layer returns neutral and the
+  rest of the pipeline still produces a verdict.
 
 ---
 
-## 2. Voice deepfake detection — the core
+## 2. Voice deepfake detection — the core ensemble
 
-**Two independent neural detectors**, fused 50/50 — different architectures,
-different training objectives, different failure modes, so neither one's blind
-spot silently becomes the product's blind spot:
+**Two independent neural detectors** produce per-window spoof probabilities in
+[0,1] and carry the verdict (0.90 combined weight); four handcrafted heuristics
+are shown as corroborating evidence only (0.10 total — measured near-noise on
+modern fakes, so they cannot dominate a confident verdict). A calibrated ensemble
+gives a 0–100 risk score banded **GREEN / AMBER / RED**, with a fourth band —
+**UNCERTAIN** — when the input is too degraded to score honestly (§2.3).
 
-| Detector | Base model | Trained for | Weight |
+**Ensemble weights** (`ml/ensemble.py`):
+
+| Layer | Weight | Method |
+|---|---|---|
+| `aasist` (neural) | 0.45 | XLS-R (300M) truncated to 5 layers + **W2VAASIST** graph-attention head |
+| `clone_v3` (neural) | 0.45 | second independent detector, fine-tuned on modern commercial clones |
+| `mfcc` | 0.025 | handcrafted spectral/MFCC features (evidence) |
+| `breath` | 0.025 | breath-pattern energy heuristic (evidence) |
+| `phase` | 0.025 | phase-coherence analysis (evidence) |
+| `liveness` | 0.025 | liveness/articulation heuristic (evidence) |
+
+**Why two detectors, not one bigger one:** a single SSL detector that scores well
+on a dev set can collapse out-of-domain (Müller et al., Interspeech 2022 report
+200–1000% cross-domain EER degradation). Two detectors **trained on different
+clone families fail differently**, so their disagreement is itself a signal (§7)
+and one model's blind spot doesn't silently clear a fraud. This is the central
+design lesson (§3).
+
+**Aggregation over a whole recording:** audio is split into ~4 s chunks; the
+**worst (highest-risk) chunk drives the verdict** — *a deepfake anywhere in the
+call is a deepfake*. A **Silero VAD** gates non-speech so we never score silence
+or noise. The neural forward is **batched** across chunks (one backbone pass, not
+one per chunk).
+
+### 2.1 The neural detectors
+- **`aasist` (primary):** `facebook/wav2vec2-xls-r-300m` truncated to its first 5
+  encoder layers (we only consume `hidden_states[5]`; the trailing ~18 layers are
+  removed with bit-identical output, ~2–3× less compute) → a vendored **W2VAASIST**
+  graph-attention head → softmax, spoof = P(class 1). Preprocessing mirrors the
+  Codecfake reference exactly: repeat-pad (tile) to 64 600 samples at 16 kHz,
+  zero-mean/unit-variance normalise.
+- **`clone_v3` (second detector):** an independent XLS-R-based detector fine-tuned
+  on a different, clone-heavy corpus; run in the same pass and fused 50/50 with
+  `aasist`.
+- **Calibration:** raw scores → alarm scale via Platt scaling fit on a labelled
+  dev set (`models/calibration.json`, `ml/scoring.py`), with L2 ridge to prevent
+  the small-data logistic blow-up, and safety clamps so a bad calibration degrades
+  gracefully rather than flagging everything.
+- **Why SSL:** XLS-R is pretrained on 128-language unlabelled speech — good for
+  Hindi/Indian voices — and fine-tuning a light head on top generalises far better
+  than a from-scratch CNN.
+
+### 2.2 Fallback chain
+The precedence chain is `detector_v2 (dual) → wav2vec2_detector → spectrogram_cnn
+→ aasist`: if the fine-tuned bundle is absent the engine falls back to a weaker
+committed head so it still runs. A mel-spectrogram CNN baseline reached 2.75% dev
+EER but 9.75% on unseen attacks and false-flagged real laptop-mic voices — the
+domain-generalisation gap the SSL detectors close.
+
+### 2.3 Input-quality abstention (`ml/quality.py`)
+Every window is scored on level (RMS), clipping, and segmental SNR. A too-quiet /
+clipping / noisy input is **out-of-distribution**, where the score is unreliable
+in *both* directions (may pass a real caller OR wave through a replayed deepfake).
+When it fails, the verdict becomes **UNCERTAIN** with an actionable reason ("move
+somewhere quieter", "mic level too low") and fusion forces CHALLENGE — never a
+false GREEN, never a BLOCK on a score we don't trust.
+
+### 2.4 Replay-channel gate (`ml/replay.py`)
+A clone played from a loudspeaker into a mic (the classic live-injection channel,
+and the one where artifact detectors degrade hardest) leaves a spectral signature:
+small drivers can't reproduce the low band and the driver+air path rolls off the
+top octave. Two band-energy ratios detect it; a suspected replay forces CHALLENGE
+even if the voice score reads clean. Evidence-only weight; fullband channels only
+(a narrowband telephony line legitimately lacks both bands, so the gate is not run
+there).
+
+---
+
+## 3. Training, evaluation & the generalization lesson
+
+**Metric:** Equal Error Rate (EER) and AUC — standard for anti-spoofing, plus
+accuracy at the deployed threshold. Lower EER / higher AUC is better.
+
+**The lesson that shaped the architecture.** Our first single detector — a
+fine-tuned wav2vec2 — scored **< 0.5% EER on its dev set** and then **40% EER /
+AUC 0.63 on real commercial clones of our own voices.** Benchmark accuracy did not
+transfer. The fix was *two independent detectors + calibration on our own labelled
+data*, not a bigger model.
+
+**Measured result** (single fixed benchmark: 122-clip held-out set, our own voices
++ commercial clones, `python -m eval.run ../Dataset_orig`):
+
+| Config | Accuracy | EER | AUC |
 |---|---|---|---|
-| `detector_v2` | wav2vec2-XLS-R-300M (truncated to first 5 encoder layers, verified bit-identical to the full stack's layer-5 hidden state — ~1.8× faster, zero accuracy cost) + a W2VAASIST graph-attention head | Codecfake — a neural-codec/compression-artifact specialist | 0.50 |
-| `detector_v3` | wav2vec2-XLSR-53-large | Fine-tuned specifically on modern commercial TTS/clone engines (ElevenLabs, Polly, etc.) — matches the actual clone threat directly | 0.50 |
+| Neural-only | 95.9% | 6.6% | 0.989 |
+| **Full ensemble (deployed)** | **99.2%** | **1.6%** | **0.999** |
 
-Four acoustic heuristics (MFCC/spectral flatness, breath-pattern energy, phase
-coherence, liveness/articulation) are computed and shown in `layer_breakdown` as
-**evidence**, but carry **zero ensemble weight**. This was a deliberate,
-measured change: on labeled real/clone pairs, the heuristics did not separate
-the two classes (breath returned ~0.75 on nearly everything), and any non-zero
-weight pulled a confidently-fake verdict back toward AMBER — the "detects but
-never commits" symptom. Demoting them to evidence-only, while keeping them fully
-visible to the analyst, fixed it.
-
-**Aggregation over a whole recording:** audio is split into ~4 s chunks (VAD-gated
-— see §4); the **worst (highest-fused-risk) chunk drives the verdict** —
-semantically, *a deepfake anywhere in the call is a deepfake*.
-
-**Input-quality gate:** every window is scored for level (RMS), clipping
-fraction, and segmental SNR. When the input is too quiet, clipping, or noisy to
-trust, the verdict is **UNCERTAIN** (not a guessed GREEN or RED) with a
-plain-language reason, and the downstream action is forced to **CHALLENGE** —
-never a silent false-clear, never a false alarm from a bad mic.
-
----
-
-## 3. Calibration & evaluation methodology (the part worth reading carefully)
-
-**Metric:** Equal Error Rate (EER) — the operating point where false-accept =
-false-reject rate; standard for anti-spoofing, lower is better.
-
-**Calibration** (`backend/tools/fit_calibration.py`) converts a raw neural
-softmax probability into a bank-facing risk score via Platt scaling
-(`p_calibrated = sigmoid(a·logit(p_raw) + b)`), then sets the GREEN/AMBER/RED
-thresholds from a labeled real/clone dev set. Two failure modes we found and
-fixed in this process are worth documenting, because they're the kind of
-methodology bug that silently inflates reported accuracy:
-
-1. **Scoring the wrong window.** An earlier version scored each dev clip in one
-   shot, which — because of how the model pads short inputs — silently only
-   evaluated each clip's first ~4 seconds. The deployed app instead scores the
-   **worst window across the whole file**. Fitting calibration on the easy
-   opening of a clip and deploying worst-window scoring is an apples-to-oranges
-   evaluation. Fixed: the fitter now mirrors the deployed scoring path exactly.
-2. **Divergent calibration fit.** With a small (15-clip), near-perfectly
-   separable dev set, the Platt-scaling logistic regression diverged
-   (coefficients `a≈46, b≈84`) — a classic small-sample separability failure —
-   landing far outside the runtime safety clamps. Fixed with L2 ridge
-   regularization toward the identity mapping.
-
-**Current honest result** (14 well-behaved dev clips, two documented
-out-of-domain outliers excluded — see §7): **clean EER 0.0%**, real scores cap at
-0.088, fake scores start at 0.666 (gap +0.577). **Telephony EER 22.5%** — this is
-the honest number for the un-augmented model; the retrain in progress (§8)
-targets exactly this gap.
-
-**Channel-robust A/B** (`backend/eval/ab_channels.py`) scores a broader labeled
-set (dev clips + a public LibriSpeech-real/VITS-fake corpus) across five
-acoustic channels with a confirm-2 moving-average aggregate (mirroring the live
-stream's temporal smoothing):
-
-| Channel | `detector_v2` EER |
-|---|---|
-| clean | 13.6% |
-| reverb | 17.4% |
-| noise | 18.2% |
-| telephony | 27.3% |
-| replay (speaker→room→phone line) | 26.1% |
-
-This is a **wider, harder, more honest** number than the dev-set figure above —
-it includes public out-of-domain fakes the dev set doesn't. We report both
-because they measure different things: the dev-set number is "does calibration
-work on data we understand," the channel grid is "how does the raw model
-generalize."
+**Known gaps, measured not hidden:** (a) **telephony ~20% EER** — no telephony-
+specific training in the deployed bundle yet; a channel-robust retrain
+(`training/train_robust.py`: telephony/reverb/noise/**speaker-replay**
+augmentation, gated to not regress clean) is in progress. (b) A few out-of-domain
+studio-real clips still false-positive. (c) Our own red-teaming found an
+open-source generator that partially evades the current model — that finding feeds
+the retrain, and is the argument that **the loop is the product, not any frozen
+model.** (d) 122 clips is a small corpus — strong evidence, not proof.
 
 ---
 
 ## 4. Streaming engine (live calls)
 
-- **Windowing:** raw 16 kHz float32 PCM frames buffer into **4 s windows, 2 s
-  hop** (50% overlap) → a fresh verdict roughly every 2 s; first verdict ~4–6 s in.
-- **VAD gating (Silero, ONNX):** windows without real speech are skipped before
-  paying for a full SSL forward pass — cuts compute on silence/hold-tone and
-  removes the noisiest verdicts. Fails open (never gates out real speech) if the
-  model is unavailable.
+- **Windowing:** raw 16 kHz float32 PCM frames are buffered into **4 s windows with
+  a 2 s hop** (50% overlap) → a fresh verdict ~every 2 s; first verdict ~4 s in.
 - **Off-thread inference:** CPU-bound torch runs via `asyncio.to_thread` so the
-  event loop isn't blocked.
-- **Backpressure:** only the newest window is scored; backlog is discarded — a
-  slow CPU degrades gracefully instead of flooding the client.
-- **`StreamAggregator`:** EWMA smoothing (α=0.35) + two-window confirmation +
-  hysteresis (different thresholds to enter vs. leave RED). A single noisy
-  window can't flip the verdict; a sustained signal still confirms RED within
-  the first ~6 s of speech.
-- **Live-call ingest (WebRTC):** `/ws/rtc/{room}` is a minimal signaling relay —
-  the call's two participants ("customer"/"agent") negotiate a **peer-to-peer**
-  WebRTC audio connection directly; media never touches this server. The agent
-  side taps the received track **digitally** (WebAudio) and streams it into the
-  same `/ws/analyze` pipeline. This matters: **playing audio through a physical
-  speaker into a microphone (over-the-air replay) is a fundamentally harder
-  detection problem than tapping the call digitally** — published research
-  (Müller et al., "Replay Attacks Against Audio Deepfake Detection," Interspeech
-  2025) measures the same detector family degrading from 4.7% to 18.2% EER under
-  physical replay. A real telephony integration taps the call digitally too
-  (SIPREC/media-fork), so the WebRTC demo path matches production, not a
-  laptop-mic party trick.
+  event loop (and other connections) aren't blocked.
+- **Backpressure:** only the **newest** window is scored; backlog is discarded.
+  Without this, a slow CPU lets windows queue and then floods the client — the
+  cause of an early UI freeze.
+- **Stream aggregation (`ml/scoring.py` `StreamAggregator`):** a single 4 s window
+  is noisy, so the live track is stabilised with **EWMA smoothing + 2-window
+  confirmation + hysteresis** — it needs two confirming windows above the RED
+  threshold to enter RED, and holds RED until the smoothed score falls back below
+  the lower threshold. A separate `call_max` preserves "one cloned segment flags
+  the call" over the smoothed track. This replaced an earlier peak-hold-with-decay
+  scheme, which was jumpier and had no confirmation gate.
 
 ---
 
 ## 5. Scam-script detection (human scammers)
 
 - **Pipeline:** rolling audio → **Whisper** (`faster-whisper`, base, int8 CPU) →
-  transcript → **LLM** (NVIDIA Nemotron via the NIM OpenAI-compatible API) →
-  `{scam_score, tactics}`.
+  transcript → **LLM** (NVIDIA NIM, OpenAI-compatible API) → `{scam_score, tactics}`.
+- **Model choice — a real lesson:** the default is a plain instruct model
+  (`meta/llama-3.1-8b-instruct`), **not** a reasoning model. A reasoning model
+  (e.g. `nemotron-super-49b`) puts its answer behind a separate `reasoning` field
+  and can leave `content` null for many seconds/tokens — incompatible with this
+  layer's ~8 s real-time budget; one retired model id additionally *hung* server-
+  side, silently eating the timeout every call. The instruct model returns clean
+  JSON in ~1.4 s.
 - **Tactics** (closed set, evidence-required prompt): urgency, authority
   impersonation, isolation, new-beneficiary, sensitive-info (OTP/PIN) request, threat.
-- **Throttling:** runs in the background every ~4 s over the last ~8 s of audio,
-  folded into the next verdict — never blocks the ~2 s detection cadence.
+- **Throttling:** STT+LLM is heavier, so it runs **in the background every ~4 s**
+  over the last ~8 s of audio and is folded into the next verdict — it never blocks
+  the 2 s detection cadence.
 - **Multilingual:** Whisper auto-detects language; the LLM reasons in Hindi/Hinglish.
 - **Fail-safe:** no key / no STT / network error → neutral score; voice detection unaffected.
 
@@ -176,142 +185,128 @@ generalize."
 Rule-based (deliberately, for auditability — every decision is explainable):
 
 ```
-quality_ok == False → CHALLENGE  (input too degraded to trust the voice score —
-                                   never BLOCK on a score we don't trust, never
-                                   a silent false-clear either)
-threat     = voice_risk≥70  OR  scam_score≥70  OR  novelty≥0.6
+threat     = voice_risk ≥ RED_threshold  OR  scam_score ≥ 70
 high_value = new_beneficiary OR amount ≥ ₹50,000
-action     = BLOCK      if threat and high_value
-             CHALLENGE  if threat
-             MONITOR    otherwise
+action = BLOCK     if threat and high_value
+         CHALLENGE if threat
+         MONITOR   otherwise
+# overrides (last word), each forcing at least CHALLENGE, never a silent clear:
+#   quality not ok  → CHALLENGE ("verify another way")
+#   replay suspected → CHALLENGE ("channel can't be trusted")
 ```
-Each action carries a plain-English reason. Thresholds are tunable per the
-bank's risk appetite. (Rationale: a learned policy needs labelled outcome data
-the system must first accumulate; the rule layer is the honest v1 and the
-fallback.)
+The voice RED threshold is read from `ml.scoring` so the action banding always
+matches the alert-level banding. Novelty is **noted** in the reason but no longer
+forces the threat flag on its own (it was too noisy as a hard gate). Each action
+carries a plain-English reason; thresholds are tunable per the bank's risk
+appetite. (Rationale: a learned policy needs labelled outcome data the system must
+first accumulate; the rule layer is the honest v1 and the fallback.)
 
 ---
 
-## 7. Known, root-caused model gap
+## 7. Novelty / zero-day detection
 
-Two out-of-domain "studio" real voices in the dev set score inverted — one of
-them reads clean for its first 10 seconds then flips to fake-range from 10s on.
-This was root-caused precisely (not hand-waved): it's a genuine ranking
-inversion by the model on unfamiliar recording conditions, not a calibration
-artifact — a threshold cannot fix a wrong ranking. Both clips are excluded from
-the calibration fit (visibly, with the tool self-flagging any future clip that
-shows the same pattern) and documented as needing the retrain below, not a
-threshold tweak.
-
-## 8. Why we didn't just swap in a "better" public model
-
-Following the standard playbook of picking the best open-weights checkpoint from
-the anti-spoofing literature, we ported **XLSR-SLS** (Zhang et al., ACM MM 2024;
-2.14% EER ASVspoof-DF, 7.84% EER on the In-the-Wild generalization benchmark —
-among the strongest published open-weights results) into the stack and ran the
-same channel-robust A/B harness against it. **It lost on 4 of 5 channels** to the
-model already deployed (clean 34.8% vs. 13.6% EER; telephony 50.0% vs. 27.3%) —
-it is unstable window-to-window on out-of-domain audio and reads room reverb
-itself as spoof evidence. It is **not** in the live decision path. Its real
-value: it fixes the studio-voice inversion above on clean audio, so it is now
-the warm-start seed for a channel-augmented fine-tune (telephony/reverb/noise
-augmentation + real room impulse responses + more diverse real speakers,
-`backend/training/train_robust.py --arch sls`) — the actual fix for the
-telephony/replay gap, not yet run on GPU. This is the single biggest remaining
-accuracy lever.
+- **Signal (two, take the stronger):** (1) the primary model's own softmax
+  uncertainty, `novelty = 1 − |2p − 1|` (peaks at p=0.5); (2) **cross-detector
+  disagreement** — when `aasist` and `clone_v3` diverge sharply, that is itself an
+  out-of-distribution signal, and ensemble disagreement is better-calibrated than
+  any single model's confidence (Lakshminarayanan et al., "Deep Ensembles",
+  NeurIPS 2017).
+- **Action:** novelty ≥ 0.6 lifts a confident GREEN to AMBER (an unknown synthesis
+  signature shouldn't read fully clean).
+- **Honest limitation:** signal (1) is still a **softmax-uncertainty heuristic**;
+  a calibrated upgrade is embedding-distance OOD (Mahalanobis to class centroids) —
+  noted as the upgrade path in code. Signal (2) only exists while both detectors
+  are loaded.
 
 ---
 
-## 9. Novelty / zero-day detection
+## 8. Campaign / repeat-attacker detection
 
-- **Signal:** the model's own uncertainty. With spoof prob `p`,
-  `novelty = 1 − |2p − 1|` (peaks at p=0.5), maxed against cross-detector
-  disagreement when both neural detectors are active (two models trained
-  differently disagreeing sharply is itself evidence of an unfamiliar case —
-  Lakshminarayanan et al., "Deep Ensembles," NeurIPS 2017).
-- **Action:** novelty ≥ 0.6 lifts a GREEN verdict to AMBER.
-- **Honest limitation:** this is a **softmax-uncertainty heuristic, not true
-  out-of-distribution detection.** A calibrated upgrade is embedding-distance OOD
-  (Mahalanobis to class centroids) — noted as the upgrade path in code.
-
----
-
-## 10. Campaign / repeat-attacker detection
-
-- **Voiceprint:** an L2-normalised embedding from the detector's own forward
-  pass (no extra inference cost).
-- **Correlation:** cosine similarity against stored voiceprints (sqlite). A
-  match above threshold clusters as a campaign; a voiceprint from a previously
-  flagged call hits a blocklist on its next call.
-- **Honest limitations:** the embedding space is not a dedicated
-  speaker-verification space, so the match threshold must be calibrated on real
-  clones in a pilot; it's a linear scan today — fine for a branch/PoC, needs
-  FAISS/pgvector beyond ~100k voiceprints.
+- **Voiceprint:** an L2-normalised SSL embedding used for cosine correlation.
+- **Correlation:** cosine similarity against stored voiceprints (sqlite). Match ≥
+  **0.85** → same cluster (campaign); a voiceprint from a previously-flagged call
+  hits a **blocklist** on its next call.
+- **Honest limitations:** (a) the embedding is **not** a dedicated speaker-
+  verification space, so 0.85 must be **calibrated on real clones** in a pilot;
+  (b) it's a **linear scan** — fine for a branch/PoC, needs FAISS/pgvector beyond
+  ~100k voiceprints; (c) **implementation note:** the embedding currently comes
+  from `wav2vec2_detector` (the legacy `deepfake_w2v.pt`, gitignored) via a
+  *separate* forward pass, not the deployed dual detectors — so on a machine
+  without that file, campaign correlation is silently skipped (the verdict is
+  unaffected; campaign intel is additive by design). Unifying the embedding onto
+  the deployed detector is a tracked cleanup.
 
 ---
 
-## 11. Governance, audit, observability
+## 9. Governance, audit, observability
 
-- **Audit log:** append-only JSONL, one line per verdict, stable `call_id`, no
-  audio (transcript text only).
-- **Confusion matrix:** analyst fraud/legit labels join to audit verdicts → live
-  TPR/FPR/precision.
-- **Drift:** flagged-rate in a recent window vs. baseline; upgrade path is
-  PSI / proper time-series.
+- **Audit log:** append-only JSONL, one line per verdict, stable `call_id`,
+  **no audio** (transcript text only). Backs the forensic evidence packs.
+- **Confusion matrix:** analyst fraud/legit labels are joined to audit verdicts →
+  live **TPR / FPR / precision**.
+- **Drift:** two-window heuristic — flagged-rate in the recent window vs the
+  baseline; |Δ| ≥ 0.2 raises an alert. (Upgrade path: PSI / proper time-series.)
 - **Model registry:** champion/challenger with version, training data, eval scores.
 - **Metrics:** Prometheus exposition (latency, verdict mix, errors).
-- **Shadow vs. enforce:** a policy flag — score+log only, or act — for
-  risk-free piloting.
+- **Shadow vs enforce:** a policy flag — score+log only, or act — for risk-free piloting.
 
 ---
 
-## 12. Notable engineering decisions
+## 10. Notable engineering decisions
 
-- **Fail-safe composition:** advanced layers degrade to neutral; the core
-  verdict always survives a missing dependency, including a missing network
-  connection (the backend boots and scores with `HF_HUB_OFFLINE=1`).
-- **Offline-safe architecture loading:** the SSL backbone's architecture is
-  built from a small vendored config file rather than fetched from HuggingFace
-  at every boot — a bank deployment must not need `huggingface.co` reachable to
-  start, and a DNS hiccup must not crash a live call's analysis.
-- **No-audio principle:** audio is scored in memory and discarded; only
-  verdicts and transcripts persist — minimises the data-privacy/breach surface.
-- **A/B-gated model changes:** no model swap ships without passing the
-  channel-robust harness against the currently deployed model — this is what
-  caught the ported public checkpoint underperforming (§8) before it could ship
-  as a regression disguised as an upgrade.
-- **Minimalism (intentional):** code is kept to the simplest version that
-  works, with explicit `ponytail:` comments naming each deliberate shortcut and
-  its upgrade path — so reviewers can see intent, not omission.
+- **Fail-safe composition:** advanced layers degrade to neutral; the core verdict
+  always survives a missing dependency.
+- **OpenMP conflict:** torch and ctranslate2 (Whisper) each ship an Intel OpenMP
+  runtime; on Windows both load `libiomp5md.dll` and the duplicate-init check aborts
+  the process. Resolved with `KMP_DUPLICATE_LIB_OK` set before import (same runtime,
+  safe) — the clean alternative is isolating STT in a subprocess.
+- **No-audio principle:** audio is scored in memory and discarded; only verdicts
+  and transcripts persist — minimises the data-privacy/breach surface.
+- **Minimalism (intentional):** code is kept to the simplest version that works,
+  with explicit `ponytail:` comments naming each deliberate shortcut and its
+  upgrade path — so reviewers can see intent, not omission.
 
 ---
 
-## 13. Honest limitations & future work
+## 11. Honest limitations & future work
 
-1. **Telephony/replay robustness is the known, prioritized gap** — the
-   channel-augmented retrain (§8) is scoped and ready to run, just not yet run
-   on GPU.
-2. **Voiceprint/campaign threshold** needs calibration on real bank traffic —
-   current values are reasonable defaults, not tuned operating points.
-3. **Novelty** is a softmax-uncertainty heuristic → upgrade path is embedding-OOD.
-4. **Campaign store** is a linear scan → FAISS/pgvector at scale.
-5. **LLM is a cloud call** (NIM); on-prem deployment runs the same Nemotron as a
-   self-hosted NIM container — code only changes a base URL.
-6. **Speaker identity** (is it *this customer*?) is not yet built — anti-spoofing
-   only; customer-voiceprint verification is the planned next layer.
-7. **Adversarial robustness** (evasion via perturbation) is untested.
+1. **Telephony (~20% EER)** is the headline gap — deployed bundle has no
+   telephony-specific training yet. Channel-robust retrain in progress; until it
+   lands, degraded input abstains (UNCERTAIN) rather than guessing.
+2. **Small eval corpus (122 clips)** — strong evidence, not proof. A larger,
+   multi-source benchmark with confidence intervals is the next evaluation step.
+3. **Out-of-domain false positives** — a few studio-real voices still read fake;
+   the fix is more diverse real training data, not a threshold tweak.
+4. **Threshold calibration** (voiceprint 0.85, fusion cut-offs) needs real bank
+   data — current values are reasonable defaults, not tuned operating points.
+5. **Novelty** signal (1) is a softmax-uncertainty heuristic → upgrade to
+   embedding-OOD.
+6. **Campaign store** is a linear scan → FAISS/pgvector at scale; and its
+   embedding rides the legacy model (§8c) → unify onto the deployed detector.
+7. **LLM is a cloud call** (NIM); on-prem deployment runs a self-hosted NIM
+   container — code only changes a base URL.
+8. **Speaker identity** (is it *this customer*?) is not yet built — anti-spoofing
+   only; customer-voiceprint verification / Voice OTP (`/verify`) is the layer
+   being built out (see `VOICE-OTP-HANDOFF.md`).
+9. **Adversarial robustness** (evasion via perturbation) is untested — and our own
+   red-teaming already found a generator that partially evades the current model.
+10. **Security & scale:** endpoints are API-key gated only when `DHWANI_API_KEY`
+    is set (open by default for the demo); per-call state (OTP challenges, RTC
+    rooms, voiceprint scan) is in-process, so multi-replica scale-out needs a
+    shared store. mTLS and horizontal scale-out are on the hardening roadmap, not
+    shipped.
 
 ---
 
-## 14. Tech stack
+## 12. Tech stack
 
-FastAPI · Uvicorn · PyTorch · torchaudio · librosa · transformers (wav2vec2) ·
-faster-whisper (CTranslate2) · NVIDIA NIM (Nemotron) · aiortc-free WebRTC
-signaling (media stays peer-to-peer in-browser) · scipy · scikit-learn · sqlite ·
-Prometheus exposition · Vite + React (TanStack) + Tailwind · Docker.
+FastAPI · Uvicorn · PyTorch · torchaudio · librosa · transformers (XLS-R) ·
+Silero VAD · faster-whisper (CTranslate2) · NVIDIA NIM (Llama-3.1-8B-Instruct) ·
+scipy · scikit-learn · sqlite · Prometheus exposition · Vite + React + Tailwind ·
+WebRTC · Docker.
 
-> Summary: a layered, fail-safe pipeline where two independent neural detectors
-> carry the verdict, an LLM adds human-scam coverage, an input-quality gate
-> refuses to guess on bad audio, and rule-based fusion turns scores into
-> auditable decisions — every accuracy number in this document is reproducible,
-> and the roadmap above is exactly where the honest gaps are.
+> Summary: a layered, fail-safe pipeline where **two independent SSL detectors**
+> carry the verdict, an LLM adds human-scam coverage, quality/replay gates protect
+> against untrustworthy channels, and rule-based fusion turns scores into auditable
+> decisions — engineered to run on-prem, in real time, with the honest limitations
+> above as the roadmap.

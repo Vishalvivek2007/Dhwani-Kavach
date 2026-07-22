@@ -89,8 +89,8 @@
     <div class="connect"></div>
 
     <div class="step"><div class="num"><b>6</b></div>
-      <div class="body loop"><div class="t">Peak-hold with decay<span class="tag">event loop</span></div>
-        <div class="d"><code>peak = max(risk, peak·0.9)</code> — a flagged window stays flagged for a few windows instead of bouncing back, then recovers for the next speaker.</div></div></div>
+      <div class="body loop"><div class="t">Stream aggregation (stability)<span class="tag">event loop</span></div>
+        <div class="d"><code>StreamAggregator</code> — EWMA smoothing + 2-window confirmation + hysteresis on the fused score, so a flagged call stays flagged and one-off spikes don&rsquo;t trip it.</div></div></div>
     <div class="connect"></div>
 
     <div class="step"><div class="num"><b>7</b></div>
@@ -115,7 +115,7 @@
     <span>verdict ~every 2 s</span>
     <span>scam throttled ~4 s</span>
     <span>first verdict ~4 s</span>
-    <span>peak decay 0.9 / window</span>
+    <span>EWMA + hysteresis</span>
   </div>
 
   <div class="foot">DHWANI-KAVACH · RUNTIME ORCHESTRATION · TEAM ERROR 404</div>

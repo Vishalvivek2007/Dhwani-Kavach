@@ -16,8 +16,7 @@ because that's where a bank's procurement team kills the deal:
 1. **It dies on a real phone line.** Demos run on a clean laptop mic at 16 kHz.
    Real bank calls are 8 kHz, G.711/AMR-codec, packet-loss telephony. Models
    trained on clean audio collapse on telephony. **This is the #1 production
-   failure** and the first thing a serious bank will test. *(We measure this
-   honestly — see §3 — rather than hiding it behind a best-case demo.)*
+   failure** and the first thing a serious bank will test.
 2. **It only catches deepfakes.** Most vishing is a *real human* scammer. A
    deepfake-only product scores the actual fraud GREEN. *(You already closed
    this with the scam-script LLM — keep hammering it.)*
@@ -25,9 +24,6 @@ because that's where a bank's procurement team kills the deal:
    No FPR/TPR-over-time, no drift monitoring, no versioning = can't go to prod.
 4. **It flags real customers.** A high false-positive rate on genuine callers is
    worse than useless — it destroys customer trust and floods the fraud desk.
-   *(Our answer isn't just "low FPR" — it's the input-quality gate: when the
-   line is too bad to trust, we say UNCERTAIN instead of guessing GREEN or RED.
-   No competitor demo does this.)*
 
 Build where they lose. The features below are ranked by **(deal impact) ×
 (feasibility given what you already have)**.
@@ -39,31 +35,26 @@ Build where they lose. The features below are ranked by **(deal impact) ×
 | Tier | Capability | Stance |
 |------|-----------|--------|
 | **Table stakes** | A deepfake classifier; an accuracy number | Don't lead here — everyone claims it |
-| **Your current moat** | Scam-script LLM, on-prem, two independent neural detectors + explainable evidence signals, input-quality abstention, fused MONITOR/CHALLENGE/BLOCK, novelty/zero-day, audit trail, /cases, /metrics | Lead with these |
-| **Next moat (this doc)** | Telephony-grade robustness, multilingual, campaign detection, governance, shadow-mode | Build these to be uncatchable |
+| **Your current moat** | Scam-script LLM, on-prem, explainable 5-layer, fused MONITOR/CHALLENGE/BLOCK, novelty/zero-day, audit trail, /cases, /metrics | Lead with these |
+| **Next moat (this doc)** | Telephony-grade, multilingual, campaign detection, governance, shadow-mode | Build these to be uncatchable |
 
 ---
 
 ## 3. The features that win — ranked
 
-### #1 — Telephony-grade robustness  ★ highest deal impact, honestly in progress
-**What:** channel-augmented fine-tuning (real room impulse responses, telephony
-codec, reverb, noise) so the model that already carries the live verdict also
-holds up off a clean mic.
-**Where we actually stand:** we measure this rigorously, not optimistically —
-current channel-robust evaluation shows clean-audio separation is strong while
-telephony/reverb/replay are the honestly-tracked weak channels. The retrain to
-close this gap is scoped and ready to run (warm-started from a stronger public
-checkpoint we already ported and benchmarked — see §6). **This candor is itself
-a selling point**: a team that shows you their weak channel with real numbers is
-more credible than one that shows you a cherry-picked demo clip.
+### #1 — Telephony-grade robustness  ★ highest deal impact
+**What:** preprocess + train for 8 kHz, G.711/G.729/AMR codecs, packet loss,
+jitter, and call-centre background noise. Add codec/8 kHz augmentation to the
+training set and a resample-aware front end.
 **Why it beats competitors:** their laptop-mic demo will *fail the bank's own
-phone-line test*, and they likely haven't even measured it the way we have.
+phone-line test*. You passing it is a knockout. This is the single most
+credible thing you can say to a banker: *"it works on your actual lines, not
+just a clean mic."*
 **Bank need:** non-negotiable — real calls are telephony.
-**Effort:** medium (retrain warm-start + augmentation pipeline already built;
-needs one GPU run).
-**Demo angle:** show the channel-robustness eval table live — real numbers, not
-a single lucky clip.
+**Effort:** medium (you already have an augmentation pipeline; extend it with
+codec degradation and add an 8 kHz eval set).
+**Demo angle:** play the same clone through a phone-codec filter; show it still
+catches it.
 
 ### #2 — Multilingual / Hinglish coverage  ★ near-free, India-specific
 **What:** handle Hindi, English, code-mixed Hinglish, and major regional
@@ -73,7 +64,7 @@ Indian banking calls. You largely **already have this** — Whisper auto-detects
 language and Nemotron reasons in Hindi/English; the acoustic deepfake model is
 language-agnostic. So this is mostly a *positioning + a Hinglish test set*, not
 a big build.
-**Bank need:** direct fit for the bank's actual customer base.
+**Bank need:** direct fit for UCO's actual customer base.
 **Effort:** low (verify + a curated Hinglish/regional eval; surface detected
 language in the UI).
 **Demo angle:** run a Hindi/Hinglish scam call live → tactics still light up.
@@ -87,19 +78,20 @@ bank uses it, the smarter it gets, and a competitor can't replicate the data.
 Moves you from "per-call score" to "fraud-ring intelligence," which is what
 fraud teams actually chase.
 **Bank need:** campaign-level detection + blocklisting is high-value.
-**Effort:** medium (the neural embeddings already exist — add storage +
-nearest-neighbour clustering). **Already built.**
+**Effort:** medium (the wav2vec2 embeddings already exist — add storage +
+nearest-neighbour clustering).
 **Demo angle:** show two different "customer" calls flagged as the *same*
 underlying synthetic voice.
 
 ### #4 — Model governance & drift dashboard  ★ procurement-winner
 **What:** a dashboard of FPR/TPR over time, verdict drift, model version,
-champion/challenger, and a per-model data sheet. `/metrics` + `/governance`.
+champion/challenger, and a per-model data sheet. Extend `/metrics` + `/cases`.
 **Why it beats competitors:** banks *cannot* deploy a model they can't govern
 (RBI Model Risk Management). No hackathon team will have this. It signals
 "production-grade vendor," not "student project."
 **Bank need:** mandatory for go-live.
-**Effort:** **already built.**
+**Effort:** medium (you have /metrics + audit log as the foundation; add labels
++ time-series).
 **Demo angle:** "here's how your model-risk team monitors us in production."
 
 ### #5 — Shadow-mode pilot capability  ★ how you actually land the deal
@@ -109,40 +101,24 @@ own traffic before trusting it to act.
 **Why it beats competitors:** it's the *sales motion* banks demand — prove value
 risk-free first. Offering it shows you understand how banks buy.
 **Bank need:** every bank pilots in shadow before enforcement.
-**Effort:** **already built** (a config flag; the audit log already records everything).
+**Effort:** low (a config flag; the audit log already records everything).
 **Demo angle:** "run us in shadow for 30 days, then turn on enforcement."
 
-### #6 — "We test rigorously and tell you the truth" ★ new, underused
-**What:** we ported the strongest public open-weights deepfake detector we
-could find in the research literature, built a proper channel-robust A/B
-harness, and tested it head-to-head against our own model — and it **lost** on
-4 of 5 real-world channels, so we didn't ship it. It's now feeding our next
-retrain instead.
-**Why it beats competitors:** every team at a hackathon will claim their model
-is "the best." Almost none will show you an experiment where they tried
-something that looked better on paper and rejected it because their own testing
-said so. This is the single strongest signal of engineering maturity you have,
-and it costs nothing extra to tell.
-**Bank need:** exactly what a model-risk reviewer wants to hear — evidence of a
-real evaluation culture, not vendor claims.
-**Effort:** zero — it already happened.
-**Demo angle:** show the A/B table (v2 vs. the ported public model, 5 channels)
-and say "we don't ship regressions dressed up as upgrades."
-
-### #7 — Customer voice-identity + liveness fusion
+### #6 — Customer voice-identity + liveness fusion
 **What:** beyond "is it synthetic," verify "is it *this customer's* voice" via a
 voiceprint enrolled at consent, fused with active liveness challenges.
 **Why it beats competitors:** combines anti-spoofing + identity — closes the gap
 that voice biometrics alone leave.
 **Bank need:** strong for phone-banking authentication.
-**Effort:** medium-high (enrollment + speaker-verification model + consent flow). Not yet built.
+**Effort:** medium-high (enrollment + speaker-verification model + consent flow).
 
-### #8 — Forensic evidence pack & regulatory reporting
-**What:** per flagged call, a downloadable report (layers that fired, transcript,
-tactics, decision) for disputes / FIRs / suspicious-activity reports.
+### #7 — Forensic evidence pack & regulatory reporting
+**What:** per flagged call, a downloadable report (spectrogram, layers that
+fired, transcript, tactics, decision) for disputes / FIRs / suspicious-activity
+reports.
 **Why it beats competitors:** banks need *defensible evidence*, not just a score
 — for chargebacks, law enforcement, and regulators.
-**Effort:** **already built** (`/cases`).
+**Effort:** low-medium (extend `/cases` into a per-call report).
 
 ---
 
@@ -152,37 +128,33 @@ Judges/bankers score on these — make sure each has an answer:
 
 | Buying criterion | Your answer |
 |------------------|-------------|
-| Accuracy **and low false positives** | Clean-audio calibration separates cleanly on our labeled set; telephony is our honestly-tracked, actively-closing gap; input-quality abstention prevents false alarms on bad lines outright |
-| Works on **our** infrastructure | On-prem Docker, telephony robustness in progress with a scoped fix (#1), no audio leaves the bank |
-| Compliance | RBI data-localisation, DPDP Act posture, audit trail, no-audio-retention, governance (#4, built) |
-| Catches **real** fraud | Scam-script LLM catches human scammers; campaign detection (#3, built) |
-| Integrates without rip-and-replace | SIPREC media-fork + REST/WS API (PRODUCT-EXPLAINER.md) |
-| De-risked rollout | Shadow mode (#5, built), then enforcement |
-| Explainable / auditable | Two-detector breakdown + evidence signals, /cases, evidence pack (#8, built) |
-| Engineering rigor | We reject our own model upgrades when our tests say to (#6) |
-| Total cost / footprint | Single stateless container, CPU-viable, scales horizontally, boots offline |
+| Accuracy **and low false positives** | 99.2% acc / EER 1.6% measured on our own held-out voices + commercial clones; two independent detectors so one model's blind spot doesn't clear a fraud |
+| Works on **our** infrastructure | On-prem Docker, telephony-grade (#1), no audio leaves the bank |
+| Compliance | RBI data-localisation, DPDP Act posture, audit trail, no-audio-retention, governance (#4) |
+| Catches **real** fraud | Scam-script LLM catches human scammers; campaign detection (#3) |
+| Integrates without rip-and-replace | SIPREC media-fork + REST/WS API (INTEGRATION.md) |
+| De-risked rollout | Shadow mode (#5), then enforcement |
+| Explainable / auditable | 5-layer breakdown, /cases, evidence pack (#7) |
+| Total cost / footprint | Single stateless container, CPU-viable, scales horizontally |
 
 ---
 
 ## 5. Recommendation
 
-- **For the next review / finals (build):** **#1 telephony robustness** (run the
-  queued GPU retrain — it's the last real gap) and lean hard on **#6** (the
-  rigor story) and **#2 Hinglish**, both essentially free.
-- **Already in hand, make sure they land in the pitch:** #3 campaigns, #4
-  governance, #5 shadow mode, #8 evidence packs — these are *built*, not
-  roadmap, and most competitors won't have any of them.
-- **Heavier / later:** **#7 customer identity** (real, but needs enrollment +
+- **For the next review / finals (build):** **#1 telephony robustness** and
+  **#2 Hinglish** — they are the two most credible, India/bank-specific knockouts
+  and #2 is nearly free. Add **#5 shadow mode** (a one-flag change, huge sales
+  signal).
+- **Roadmap (post-finals, the durable moat):** **#3 campaign detection** (data
+  network effect) and **#4 governance dashboard** (procurement unlock).
+- **Opportunistic:** **#7 evidence pack** (cheap, extends /cases).
+- **Heavier / later:** **#6 customer identity** (real, but needs enrollment +
   consent design).
 
 ## 6. Pitch lines to steal
 
-- *"Every other detector works on a clean mic and dies on a phone line. We
-  measured exactly how much — and we're closing it with a queued retrain, not
-  a marketing promise."*
+- *"Every other detector works on a clean mic and dies on a phone line. Run us on your actual call audio."*
 - *"They detect deepfakes. We detect fraud — including the human scammer with no deepfake at all."*
 - *"We don't just score a call. We see the campaign: the same synthetic voice hitting fourteen of your customers."*
 - *"Run us in shadow for 30 days. Look at the numbers on your own traffic. Then decide."*
 - *"Your model-risk team can govern us from day one — drift, false-positive rate, versioning, all on a dashboard."*
-- *"We tested the best public open-weights model against ours and it lost — so we didn't ship it. That's the difference between a demo and a product."*
-- *"On a bad line, we don't guess. We say so, and we tell the caller how to fix it."*

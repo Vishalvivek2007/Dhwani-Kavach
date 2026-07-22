@@ -6,14 +6,14 @@ const BACKEND = import.meta.env.VITE_API_URL || "http://localhost:8000";
 type Phase = "idle" | "analyzing" | "done";
 type Verdict = "PROTECTED" | "REVIEW" | "CRITICAL";
 
-const LAYERS = ["AASIST", "Spectral Biometrics", "Breath Pattern", "Phase Coherence", "Active Liveness"];
+const LAYERS = ["Neural · XLS-R deepfake", "Spectral Biometrics", "Breath Pattern", "Phase Coherence", "Active Liveness"];
 
 const verdictColor = (v: Verdict) => (v === "PROTECTED" ? "#22C55E" : v === "CRITICAL" ? "#FF4D6D" : "#F59E0B");
 type Action = "MONITOR" | "CHALLENGE" | "BLOCK";
 const actionColor = (a?: Action) => (a === "BLOCK" ? "#FF4D6D" : a === "CHALLENGE" ? "#F59E0B" : "#22C55E");
 const TACTIC_LABEL: Record<string, string> = {
-  urgency: "Urgency", authority_impersonation: "Authority impersonation", isolation: "Isolation",
-  new_beneficiary: "New beneficiary", sensitive_info_request: "Asking for OTP/PIN", threat: "Threat / coercion",
+  coaching: "Being coached", duress: "Under duress", scam_narrative: "Scam narrative",
+  agent_pressure: "Pressuring agent", high_risk_intent: "High-risk request", third_party_benefit: "Pays a stranger",
 };
 
 function formatSize(b: number) {
@@ -234,7 +234,7 @@ export default function LiveDemo() {
                 </div>
               )}
               <div className="mt-3 flex flex-wrap items-center gap-2">
-                <span className="font-mono text-[11px] text-[#64748B]">SCAM-SCRIPT {result.scam?.score ?? 0}/100</span>
+                <span className="font-mono text-[11px] text-[#64748B]">APP-FRAUD RISK {result.scam?.score ?? 0}/100</span>
                 {(result.scam?.tactics ?? []).map((t) => (
                   <span key={t} className="rounded-full px-3 py-1 text-[11px]" style={{ border: "1px solid #F59E0B", color: "#F59E0B" }}>
                     {TACTIC_LABEL[t] ?? t}

@@ -1,4 +1,5 @@
 import os
+import sys
 
 # faster-whisper (ctranslate2) and torch each bundle an Intel OpenMP runtime; on
 # Windows both load the same libiomp5md.dll and the duplicate-init check aborts
@@ -6,6 +7,14 @@ import os
 # Must be set before torch/ctranslate2 import. ponytail: env workaround; the clean
 # fix is isolating STT in a subprocess — do that only if numerics ever look off.
 os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
+
+# Windows console defaults stdout/stderr to the system codepage (cp1252), which
+# raises UnicodeEncodeError on non-Latin transcript text (Hindi/regional scam
+# calls print through ws_analyze's debug log). Multilingual is a stated feature,
+# so the console must not crash on it.
+if sys.stdout.encoding and sys.stdout.encoding.lower() != "utf-8":
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 import asyncio
 

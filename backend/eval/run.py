@@ -62,7 +62,8 @@ def _metrics(fake: np.ndarray, real: np.ndarray, t_op: float) -> dict:
 
 def _score_dir(folder: str, degrade: bool) -> list[dict]:
     rows = []
-    for f in sorted(glob.glob(os.path.join(folder, "*.wav")) + glob.glob(os.path.join(folder, "*.flac"))):
+    exts = ("*.wav", "*.flac", "*.mp3", "*.m4a", "*.mpeg", "*.ogg")
+    for f in sorted(sum((glob.glob(os.path.join(folder, e)) for e in exts), [])):
         audio, _ = load_audio(f)
         if degrade:
             audio = telephony.to_telephony(audio, sr=SAMPLE_RATE)

@@ -32,7 +32,8 @@ _OUT = os.path.join(os.path.dirname(__file__), "..", "models", "fusion.json")
 
 def _collect(folder: str, label: int):
     X, y = [], []
-    for f in sorted(glob.glob(os.path.join(folder, "*.wav")) + glob.glob(os.path.join(folder, "*.flac"))):
+    exts = ("*.wav", "*.flac", "*.mp3", "*.m4a", "*.mpeg", "*.ogg")
+    for f in sorted(sum((glob.glob(os.path.join(folder, e)) for e in exts), [])):
         a, _ = load_audio(f)
         lb = detect_samples(a).get("layer_breakdown", {})
         X.append([lb.get(k, 0) / 100.0 for k in _LAYERS])

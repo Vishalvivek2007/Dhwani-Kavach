@@ -9,6 +9,13 @@ fine-tunes **that** checkpoint for the two things it hasn't seen:
 1. **Channels** — telephony, reverb, noise, phone-in-room (the live-mic gap).
 2. **Indian voices** — Hindi / Indian-accented English reals (its ASVspoof
    training is Anglo/studio; some of our phone-mic reals read fake to it).
+3. **Loudspeaker replay** (added 2026-07-22) — a clone played from a phone/
+   laptop speaker into a mic. New `speaker_replay` augmentation condition in
+   `train_robust.py` (randomized 180-400 Hz → 3.4-6.5 kHz small-driver bandpass
+   + room reverb + mic noise, 14% of training samples) and a `speaker_replay`
+   column in the per-epoch anti-overfit gate. The runtime replay trust gate
+   (ml/replay.py → fusion CHALLENGE) stays as defense-in-depth either way; this
+   retrain is what lets the model actually SCORE the clone through that channel.
 
 Everything runs through the existing `backend/training/train_robust.py` with
 `--arch sls`: full-backbone fine-tune, telephony-weighted on-the-fly
@@ -51,7 +58,9 @@ The `--bootstrap` flag still works for a zero-setup sanity run
 ## Step 2 — The one-cell Kaggle run (T4 GPU)
 
 ```python
-!git clone https://github.com/<your-fork>/Dhwani-Kavach.git
+# NOTE: until PR #37 merges, clone the branch that has the speaker_replay
+# condition: add `-b feature/demo-hardening` to the clone.
+!git clone https://github.com/Chiranjib-x/Dhwani-Kavach.git
 %cd Dhwani-Kavach/backend
 !pip -q install -r requirements.txt
 # warm-start bundle from the attached private dataset:

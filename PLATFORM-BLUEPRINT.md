@@ -1,5 +1,13 @@
 # Dhwani-Kavach Platform Blueprint (V3)
 
+> **🔭 FORWARD-LOOKING VISION — not shipped state.** This is the *target*
+> architecture and a menu of future upgrades (ONNX/INT8, WavLM, FAISS/pgvector,
+> continual-learning loop, etc.). It describes where the platform could go, **not
+> what runs today.** For the deployed system and measured numbers, see
+> [FINALS-DECK-BRIEF.md](FINALS-DECK-BRIEF.md) (canonical) and
+> [TECHNICAL-OVERVIEW.md](TECHNICAL-OVERVIEW.md). Don't quote anything here as a
+> current capability on a slide.
+
 **A complete technical audit and target architecture for evolving Dhwani-Kavach from a
 deepfake detector into an enterprise Voice Intelligence Platform.**
 

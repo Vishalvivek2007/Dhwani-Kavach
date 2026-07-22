@@ -44,6 +44,12 @@ _CUT = 64600         # generate_score.py: pad_dataset()'s cut length
 _backbone = None
 _head = None
 
+# Rollback switch: set DHWANI_DISABLE_V2=1 to force ml/detector.py's precedence
+# chain (detector_v2 > wav2vec2_detector > spectrogram_cnn > aasist) to skip
+# this detector entirely and fall back to wav2vec2_detector.py, without moving
+# or deleting any model file. Unset (default) -> unchanged behaviour.
+_DISABLED = os.environ.get("DHWANI_DISABLE_V2", "").strip().lower() in ("1", "true", "yes", "on")
+
 
 def _bundle() -> str | None:
     """Path to the full fine-tuned bundle if it exists, else None."""
@@ -51,6 +57,8 @@ def _bundle() -> str | None:
 
 
 def available() -> bool:
+    if _DISABLED:
+        return False
     return _bundle() is not None or os.path.exists(_ST_PATH) or os.path.exists(_CKPT_PATH)
 
 

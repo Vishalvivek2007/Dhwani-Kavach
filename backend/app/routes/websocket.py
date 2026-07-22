@@ -118,12 +118,14 @@ async def ws_analyze(websocket: WebSocket):
                 scam_task = asyncio.create_task(asyncio.to_thread(scam_detector.analyze, snap))
 
             result["scam"] = scam
+            _rp = result.get("replay", {})
             result.update(fuse(
                 deepfake_risk=result["risk_score"],
                 scam_score=scam.get("score", 0),
                 novelty=result.get("novelty", 0.0),
                 quality_ok=_q.get("ok", True),
                 quality_reason=_q.get("reason", ""),
+                replay_suspect=_rp.get("suspect", False),
             ))
             policy.annotate(result, shadow)
             result["call_id"] = audit.record("ws", result)

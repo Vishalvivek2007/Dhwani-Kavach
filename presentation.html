@@ -170,37 +170,37 @@
   <!-- 8 DETECTION LAYERS -->
   <section class="slide">
     <div class="kicker">Deep dive &middot; voice engine</div>
-    <h2>Five layers vote; the neural model leads</h2>
+    <h2>Two independent neural detectors lead; heuristics are evidence</h2>
     <table>
       <tr><th>Layer</th><th>Weight</th><th>What it measures</th></tr>
-      <tr><td class="us">Neural (wav2vec2 SSL)</td><td>0.80</td><td>learned deepfake signature — the primary verdict</td></tr>
-      <tr><td>Spectral / MFCC</td><td>0.07</td><td>handcrafted spectral biometrics</td></tr>
-      <tr><td>Breath pattern</td><td>0.03</td><td>natural breath energy a synth often lacks</td></tr>
-      <tr><td>Phase coherence</td><td>0.05</td><td>phase artifacts of vocoded audio</td></tr>
-      <tr><td>Liveness</td><td>0.05</td><td>articulation / liveness cues</td></tr>
+      <tr><td class="us">Neural &mdash; W2VAASIST (XLS-R)</td><td>0.45</td><td>codec / artifact-specialist deepfake detector</td></tr>
+      <tr><td class="us">Neural &mdash; clone_v3 (XLS-R)</td><td>0.45</td><td>fine-tuned on modern commercial clones (ElevenLabs)</td></tr>
+      <tr><td>MFCC / breath / phase / liveness</td><td>0.10</td><td>acoustic heuristics — evidence only</td></tr>
     </table>
     <ul style="margin-top:16px">
-      <li>Weighted ensemble &rarr; 0&ndash;100 risk. Bands: <span style="color:var(--ok)">GREEN &lt;40</span> &middot; <span style="color:var(--warn)">AMBER 40&ndash;69</span> &middot; <span style="color:var(--threat)">RED &ge;70</span>.</li>
-      <li>Worst 4-second window drives the verdict; silence gated; long calls strided for bounded latency.</li>
+      <li>Two <b>independent</b> architectures (different training / failure modes) &rarr; fusion is robust where one model overfits. Optional learned logistic-regression fusion.</li>
+      <li>Weighted &rarr; 0&ndash;100 risk, <b>Platt-calibrated</b>. Bands <span style="color:var(--ok)">GREEN &lt;40</span> &middot; <span style="color:var(--warn)">AMBER 40&ndash;69</span> &middot; <span style="color:var(--threat)">RED &ge;70</span>. Worst 4s window wins.</li>
+      <li><b>Silero VAD</b> gates non-speech (hold music, line noise), not just silence.</li>
     </ul>
     <div class="foot"><span>DHWANI-KAVACH</span><span>DETECTION LAYERS</span></div>
   </section>
 
   <!-- 9 MODEL + TRAINING -->
   <section class="slide">
-    <div class="kicker">Deep dive &middot; model &amp; training</div>
-    <h2>wav2vec2 SSL — trained through real failures</h2>
-    <p class="muted" style="margin-bottom:6px">wav2vec2-base (self-supervised) &rarr; mean-pool 768-d &rarr; MLP head &rarr; softmax. SSL pretraining generalises where a from-scratch CNN doesn&rsquo;t.</p>
-    <table>
-      <tr><th>Stage</th><th>Data added</th><th>Result</th><th>Fixed</th></tr>
-      <tr><td>CNN baseline</td><td>ASVspoof 2019 LA</td><td>2.75% dev</td><td class="no">9.75% unseen</td></tr>
-      <tr><td>SSL v1</td><td>+ noise/gain aug</td><td>0.40% dev</td><td>false-flagged reals</td></tr>
-      <tr><td>SSL v2</td><td>+ real Hindi voices</td><td>0.13% dev</td><td>broadened &ldquo;real&rdquo;</td></tr>
-      <tr><td>SSL v3</td><td>+ in-the-wild + your clones</td><td>~5.2% modern</td><td>realistic hard eval</td></tr>
-      <tr><td class="us">SSL v4 (deployed)</td><td>+ telephony augmentation</td><td class="us">4% clean / 6% phone</td><td>works on phone lines</td></tr>
+    <div class="kicker">Deep dive &middot; model &amp; the generalization lesson</div>
+    <h2>Why one detector wasn&rsquo;t enough</h2>
+    <ul style="margin-bottom:12px">
+      <li><span class="big">v1</span> was a single wav2vec2: ~4% EER on ASVspoof/Kaggle dev sets — looked great.</li>
+      <li>Measured on <span class="big">real</span> ElevenLabs clones + real voices it was <span class="no">near-random: AUC 0.63</span> — a textbook out-of-domain failure (M&uuml;ller et al., Interspeech 2022: SSL detectors degrade 200&ndash;1000% cross-domain).</li>
+      <li>Fix: <span class="big">two independent XLS-R detectors + fusion</span> — a codec/artifact specialist and a clone specialist.</li>
+    </ul>
+    <table style="max-width:760px">
+      <tr><th>On our labeled real-vs-clone set</th><th>EER</th><th>AUC</th></tr>
+      <tr><td>v1 &mdash; single wav2vec2 (measured)</td><td class="no">40%</td><td class="no">0.63</td></tr>
+      <tr><td class="us">current &mdash; dual XLS-R + fusion</td><td class="us">~6.7%</td><td class="us">0.996</td></tr>
     </table>
-    <p class="muted" style="margin-top:12px;font-size:13px">Honest: EERs are on different dev sets &mdash; not directly comparable. A single fixed benchmark is next.</p>
-    <div class="foot"><span>DHWANI-KAVACH</span><span>MODEL &amp; TRAINING</span></div>
+    <p class="muted" style="margin-top:12px;font-size:13px">The lesson that drives the design: never trust one detector&rsquo;s leaderboard number.</p>
+    <div class="foot"><span>DHWANI-KAVACH</span><span>MODEL &amp; GENERALIZATION</span></div>
   </section>
 
   <!-- 10 SCAM + MULTILINGUAL -->
@@ -252,17 +252,17 @@ high_value = new payee OR amount &ge; &#8377;50,000
 
   <!-- 13 TELEPHONY -->
   <section class="slide">
-    <div class="kicker">Deep dive &middot; telephony robustness</div>
-    <h2>It works on real phone lines</h2>
+    <div class="kicker">Deep dive &middot; telephony (in progress)</div>
+    <h2>Real phone lines — the hard part, honestly</h2>
     <ul>
-      <li>Real calls are 8&nbsp;kHz, band-limited (300&ndash;3400&nbsp;Hz), G.711 &micro;-law companded, and lossy.</li>
-      <li>We degrade training audio to phone quality (codec + packet loss) so the model <b>learns telephony</b> — not just clean mics.</li>
-      <li>Result: <b>clean 4% vs phone 6% EER</b> — a ~2-point gap where un-augmented models show a cliff.</li>
-      <li>Proven live: a clone through an 8&nbsp;kHz phone filter still reads <span style="color:var(--threat)">RED</span>.</li>
+      <li>Real calls are 8&nbsp;kHz, band-limited (300&ndash;3400&nbsp;Hz), G.711 &micro;-law, and lossy.</li>
+      <li>We built a <b>channel-robust training pipeline</b> (train_robust.py) that degrades audio on the fly, and an <b>A/B eval harness</b> (eval/run.py) that measures the phone-line cost.</li>
+      <li>Measured today: telephony is still a <span class="no">weakness — AUC ~0.62&ndash;0.82</span> vs 0.996 clean.</li>
+      <li>We show this honestly — the pipeline to close the gap is built; more diverse channel data is the next run.</li>
     </ul>
     <div class="grid2" style="margin-top:18px">
-      <div class="card"><div class="stat" style="color:var(--cyan)">4% &rarr; 6%</div><p class="muted" style="margin-top:8px">clean &rarr; phone-line EER (small gap = robust)</p></div>
-      <div class="card"><div class="stat" style="color:var(--warn)">8kHz / G.711</div><p class="muted" style="margin-top:8px">the format your call centre actually runs</p></div>
+      <div class="card"><div class="stat" style="color:var(--warn)">0.996 &rarr; ~0.7</div><p class="muted" style="margin-top:8px">clean &rarr; phone AUC (the gap we&rsquo;re closing)</p></div>
+      <div class="card"><div class="stat" style="color:var(--cyan)">pipeline built</div><p class="muted" style="margin-top:8px">channel-robust retraining + A/B eval</p></div>
     </div>
     <div class="foot"><span>DHWANI-KAVACH</span><span>TELEPHONY</span></div>
   </section>
@@ -288,9 +288,9 @@ high_value = new payee OR amount &ge; &#8377;50,000
     <h2>Detector accuracy is table-stakes; the gap is everything else</h2>
     <table>
       <tr><th>Capability</th><th>Academic (AASIST/RawNet2)</th><th>Commercial cloud</th><th>Dhwani-Kavach</th></tr>
-      <tr><td>ASVspoof dev EER</td><td>~1%</td><td>n/a</td><td class="us">0.13%</td></tr>
-      <tr><td>Modern / in-the-wild fakes</td><td class="no">degrades (20&ndash;40%)</td><td class="mid">good</td><td class="us">~4&ndash;6% EER</td></tr>
-      <tr><td>Telephony (8&nbsp;kHz)</td><td class="no">usually untested</td><td class="mid">varies</td><td class="us">6% EER (trained for it)</td></tr>
+      <tr><td>Real-clone set (labeled)</td><td>not reported</td><td>not reported</td><td class="us">AUC 0.996 / EER ~6.7%</td></tr>
+      <tr><td>Modern clone clips</td><td class="no">degrades (20&ndash;40%)</td><td class="mid">good</td><td class="us">100% flagged</td></tr>
+      <tr><td>Telephony (8&nbsp;kHz)</td><td class="no">usually untested</td><td class="mid">varies</td><td class="mid">weak (~0.62&ndash;0.82) — active</td></tr>
       <tr><td>Human scam (no deepfake)</td><td class="no">&times;</td><td class="no">&times;</td><td class="us yes">&#10003; LLM layer</td></tr>
       <tr><td>Deployment</td><td class="no">research code</td><td class="no">cloud API</td><td class="us yes">on-prem Docker</td></tr>
       <tr><td>Explainability &amp; governance</td><td class="no">&times;</td><td class="mid">limited</td><td class="us yes">&#10003; built-in</td></tr>
@@ -328,7 +328,7 @@ high_value = new payee OR amount &ge; &#8377;50,000
       <div class="card"><h3>Real-time backpressure</h3><p>Only the newest window is scored; off-thread inference. A slow CPU can&rsquo;t stall or flood the stream.</p></div>
       <div class="card"><h3>Runtime conflict solved</h3><p>Diagnosed &amp; fixed an OpenMP clash (torch + Whisper) that crashed the process — now stable.</p></div>
       <div class="card"><h3>No-audio principle</h3><p>Audio scored in memory &amp; discarded; only verdicts + transcripts persist.</p></div>
-      <div class="card"><h3>Verdict stability</h3><p>Peak-hold with decay smooths per-window jitter so a flagged call stays flagged.</p></div>
+      <div class="card"><h3>Verdict stability</h3><p>StreamAggregator: EWMA + 2-window confirmation + hysteresis so a flagged call stays flagged.</p></div>
       <div class="card"><h3>Bounded latency</h3><p>60s call scored in ~6s; chunk caps keep long calls responsive.</p></div>
     </div>
     <div class="foot"><span>DHWANI-KAVACH</span><span>ENGINEERING</span></div>
@@ -373,15 +373,15 @@ high_value = new payee OR amount &ge; &#8377;50,000
     <h2>What&rsquo;s a v1 today — and the upgrade path</h2>
     <div class="grid2">
       <div><ul>
-        <li>Thresholds (voiceprint 0.85, fusion cut-offs) are sensible defaults &rarr; <b>calibrate on real traffic</b> in a pilot.</li>
-        <li>Novelty is a softmax-uncertainty heuristic &rarr; <b>embedding-distance OOD</b>.</li>
-        <li>Campaign store is a linear scan &rarr; <b>FAISS / pgvector</b> at scale.</li>
-        <li>EERs on differing dev sets &rarr; <b>one fixed benchmark</b> with CIs.</li>
+        <li><b>Small eval set (30 clips)</b> &rarr; directional; a large fixed benchmark is in progress (harness built).</li>
+        <li><b>Telephony is a measured weakness</b> (AUC ~0.62&ndash;0.82) &rarr; channel-robust retraining is the fix.</li>
+        <li><b>Out-of-domain studio real voices false-positive</b> &rarr; needs more diverse real data.</li>
+        <li><b>Default ensemble under-performs its neural core</b> &rarr; deploy calibration + fusion (EER 20% &rarr; 13% &rarr; 3%).</li>
       </ul></div>
       <div><ul>
-        <li>LLM is a cloud call &rarr; same Nemotron as an <b>on-prem NIM container</b> (base-URL change).</li>
-        <li>Customer voice-identity (is it <i>this</i> customer?) not yet built — <b>the next layer</b>.</li>
-        <li>Adversarial-evasion robustness untested — <b>on the roadmap</b>.</li>
+        <li>Thresholds (0.85, calibration, fusion) tuned on thin data &rarr; refit at scale.</li>
+        <li>LLM is a cloud call &rarr; <b>on-prem NIM container</b> (base-URL change).</li>
+        <li>Customer voice-identity not built yet; <b>adversarial-evasion</b> untested.</li>
       </ul></div>
     </div>
     <p class="lead" style="margin-top:16px;color:var(--cyan)">We&rsquo;d rather show you the roadmap than pretend it&rsquo;s finished.</p>
